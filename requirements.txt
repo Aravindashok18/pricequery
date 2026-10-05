@@ -1,0 +1,5 @@
+langchain-core==0.2.43
+SQLAlchemy==2.0.36
+PyMySQL==1.1.1
+sqlparse==0.5.1
+python-dotenv==1.0.1

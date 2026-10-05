@@ -1,0 +1,2 @@
+# the chat model used to write the SQL
+langchain-openai==0.1.25
