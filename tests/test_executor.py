@@ -54,3 +54,10 @@ def test_sql_errors_are_retryable_and_carry_the_database_message(executor):
 def test_colons_and_percent_signs_in_literals_are_not_treated_as_parameters(executor):
     result = executor.run("SELECT '12:30' AS t, title FROM products WHERE title LIKE '%Harbour%' AND 1 = 1", 100)
     assert result.rows and result.rows[0][0] == "12:30"
+
+
+def test_a_server_database_gets_a_bounded_pool_below_the_users_connection_limit():
+    # building the engine does not connect, so no MySQL server is needed to check how the pool is configured
+    executor = make_readonly_engine("mysql+pymysql://pricequery_ro:pw@localhost/pricedb", timeout_seconds=2, pool_size=3)
+
+    assert executor.engine.pool.size() == 3 and executor.engine.pool._max_overflow == 0

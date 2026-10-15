@@ -8,6 +8,8 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
+from . import config
+
 
 class QueryError(Exception):
     """The database rejected or failed the query. `retryable` means a corrected query might work."""
@@ -26,8 +28,8 @@ class QueryResult:
     extra: dict = field(default_factory=dict)
 
 
-def make_readonly_engine(url: str, timeout_seconds: float = 5.0) -> "ReadOnlyExecutor":
-    return ReadOnlyExecutor(url, timeout_seconds)
+def make_readonly_engine(url: str, timeout_seconds: float = 5.0, pool_size: int = config.DB_POOL_SIZE) -> "ReadOnlyExecutor":
+    return ReadOnlyExecutor(url, timeout_seconds, pool_size)
 
 
 class ReadOnlyExecutor:
@@ -39,14 +41,15 @@ class ReadOnlyExecutor:
     defence behind the SELECT-only database user in db/readonly_user.sql, not a replacement.
     """
 
-    def __init__(self, url: str, timeout_seconds: float = 5.0):
+    def __init__(self, url: str, timeout_seconds: float = 5.0, pool_size: int = config.DB_POOL_SIZE):
         self.timeout_seconds = timeout_seconds
         self._local = threading.local()
         parsed = make_url(url)
         self.dialect = parsed.get_backend_name()
         if self.dialect == "sqlite" and parsed.database and parsed.database != ":memory:":
             parsed = make_url(f"sqlite:///file:{parsed.database}?mode=ro&uri=true")
-        self.engine: Engine = create_engine(parsed, pool_pre_ping=True)
+        pool = {"pool_size": pool_size, "max_overflow": 0} if self.dialect != "sqlite" else {}
+        self.engine: Engine = create_engine(parsed, pool_pre_ping=True, **pool)
         self._install_session_guards()
 
     def _install_session_guards(self) -> None:
