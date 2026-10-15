@@ -1,0 +1,78 @@
+id,kind,outcome,attempts,sql
+q01,answerable,correct,1,SELECT COUNT(*) FROM products LIMIT 101
+q02,answerable,correct,1,SELECT COUNT(*) FROM categories LIMIT 101
+q03,answerable,correct,1,"SELECT c.name, COUNT(*) AS product_count
+FROM products p JOIN categories c ON c.id = p.category_id
+GROUP BY c.name ORDER BY product_count DESC LIMIT 101"
+q04,answerable,wrong,1,"SELECT c.name, COUNT(*) AS product_count
+FROM products p JOIN categories c ON c.id = p.category_id
+GROUP BY c.name ORDER BY product_count DESC LIMIT 1"
+q05,answerable,wrong,1,"SELECT p.title, ph.price, ph.scraped_at
+FROM products p JOIN price_history ph ON ph.product_id = p.id
+WHERE p.title = 'The Hidden Harbour'
+ORDER BY ph.scraped_at DESC LIMIT 1"
+q06,answerable,correct,1,"SELECT MIN(ph.price)
+FROM price_history ph
+JOIN products p ON p.id = ph.product_id
+WHERE p.title = 'The Crimson Mirror' LIMIT 101"
+q07,answerable,correct,1,"SELECT p.title, ph.price
+FROM products p JOIN price_history ph ON ph.product_id = p.id
+WHERE ph.scraped_at = (SELECT MAX(scraped_at) FROM price_history WHERE product_id = p.id)
+ORDER BY ph.price DESC LIMIT 5"
+q08,answerable,correct,1,"SELECT COUNT(*)
+FROM products p JOIN price_history ph ON ph.product_id = p.id
+WHERE ph.scraped_at = (SELECT MAX(scraped_at) FROM price_history WHERE product_id = p.id) AND ph.in_stock = 0 LIMIT 101"
+q09,answerable,wrong,1,"SELECT p.title
+FROM products p JOIN price_history ph ON ph.product_id = p.id
+WHERE ph.price < 10 LIMIT 101"
+q10,answerable,correct,1,"SELECT COUNT(*)
+FROM price_history
+WHERE scraped_at >= '2026-09-01' AND scraped_at < '2026-10-01' LIMIT 101"
+q11,answerable,correct,1,"SELECT AVG(ph.price) AS avg_price
+FROM price_history ph
+JOIN products p ON p.id = ph.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE c.name = 'Travel' AND ph.scraped_at >= '2026-08-01' AND ph.scraped_at < '2026-09-01' LIMIT 101"
+q12,answerable,correct,1,"SELECT COUNT(*)
+FROM price_alerts
+WHERE triggered_at IS NOT NULL LIMIT 101"
+q13,answerable,correct,1,"SELECT p.title
+FROM products p JOIN price_alerts pa ON pa.product_id = p.id
+WHERE pa.triggered_at IS NULL LIMIT 101"
+q14,answerable,wrong,1,"SELECT p.title, ph.price
+FROM products p JOIN price_history ph ON ph.product_id = p.id
+JOIN categories c ON c.id = p.category_id
+WHERE c.name = 'Poetry'
+ORDER BY ph.price ASC
+LIMIT 1"
+q15,answerable,correct,1,"SELECT COUNT(*)
+FROM products p JOIN price_history ph ON ph.product_id = p.id
+JOIN categories c ON c.id = p.category_id
+WHERE c.name = 'Fiction' AND ph.price > 30 AND ph.scraped_at = (SELECT MAX(scraped_at) FROM price_history WHERE product_id = ph.product_id) LIMIT 101"
+q16,answerable,correct,1,"SELECT MAX(ph.price) AS max_price
+FROM price_history ph
+JOIN products p ON p.id = ph.product_id
+JOIN categories c ON c.id = p.category_id
+WHERE c.name = 'Science' LIMIT 101"
+q17,answerable,correct,1,"SELECT COUNT(DISTINCT p.id)
+FROM products p
+LEFT JOIN price_history ph ON ph.product_id = p.id AND ph.in_stock = 0
+WHERE ph.product_id IS NULL LIMIT 101"
+q18,answerable,wrong,1,"SELECT c.name
+FROM categories c
+JOIN products p ON p.category_id = c.id
+JOIN price_history ph ON ph.product_id = p.id
+WHERE ph.price > 30
+GROUP BY c.name
+HAVING AVG(ph.price) > 30 LIMIT 101"
+q19,answerable,correct,1,"SELECT COUNT(DISTINCT ph.price)
+FROM price_history ph
+JOIN products p ON p.id = ph.product_id
+WHERE p.title = 'The Forgotten Mirror' LIMIT 101"
+q20,answerable,correct,1,SELECT COUNT(*) FROM price_history LIMIT 101
+q21,answerable,wrong,1,"SELECT COUNT(*)
+FROM price_history
+WHERE scraped_at = '2026-09-30' LIMIT 101"
+n01,unanswerable,answered,0,
+n02,unanswerable,correct,0,
+n03,unanswerable,answered,0,

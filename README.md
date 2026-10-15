@@ -4,8 +4,8 @@ Ask questions about scraped price data in plain English. A LangChain prompt give
 schema and a few worked examples and gets a SQL query back. Every query is checked and run on a read-only
 connection with a row cap, and if the database rejects it the error goes back to the model once for a fix.
 
-Stack: Python, LangChain (`langchain-core` prompts and runnables, `langchain-openai` for the model),
-SQLAlchemy, MySQL (SQLite for the demo and tests).
+Stack: Python, Flask (REST API), LangChain (`langchain-core` prompts and runnables, `langchain-openai` for the model),
+SQLAlchemy, MySQL (SQLite for the demo and the default tests).
 
 It reads the four tables written by [ecommerce-price-tracker](https://github.com/Aravindashok18/ecommerce-price-tracker)
 (`categories`, `products`, `price_history`, `price_alerts`), so it can be pointed at that database.
@@ -48,6 +48,33 @@ Retry policy: a database error (bad column, bad syntax) gets one corrected attem
 refuses are not retried, and neither are timeouts, since a rewrite would not help and the refusal is the
 point.
 
+## REST API
+
+`pricequery/api.py` puts the same pipeline behind HTTP. The API only turns outcomes into status codes: the model, the guard and the read-only connection are the ones the CLI uses.
+
+```bash
+python -m pricequery.api                     # http://127.0.0.1:5060 (or: gunicorn "pricequery.api:create_app()")
+curl -s localhost:5060/api/ask -H 'Content-Type: application/json' \
+     -d '{"question": "How many products are in each category?"}'
+```
+
+| Route | Description |
+|---|---|
+| `POST /api/ask` | `{"question"}` returns `{question, sql, columns, rows, row_count, truncated, attempts}`. `sql` is the statement that actually ran, after the guard capped it. |
+| `GET /api/schema` | The schema text the model is shown, with blocked columns left out. |
+| `GET /health` | `{status, dialect, model, max_rows}` |
+
+| Status | `error` | When |
+|---|---|---|
+| 400 | `bad_request` | not JSON, no `question`, empty, or over 500 characters. The model is never called. |
+| 422 | `unsafe_sql` | the guard refused the generated statement. Nothing ran, and it is not sent back to the model. |
+| 422 | `cannot_answer` | the model replied `NO_QUERY`: the schema cannot answer. |
+| 502 | `query_failed` | the database rejected the query, and the one corrected retry failed too. |
+| 504 | `timeout` | the query hit the time limit and was stopped. |
+| 503 | `model_unavailable` | the model call failed. The error text is not passed on to the client. |
+
+MySQL's `DECIMAL` and datetime values are sent as numbers and ISO 8601 strings. There is no authentication or rate limiting: put it behind something that has them, because every request costs a model call.
+
 ## Run it
 
 ```bash
@@ -62,11 +89,13 @@ python -m pricequery.cli --sql "DROP TABLE products"      # -> refused: only SEL
 # plain-English questions need a model
 pip install -r requirements-llm.txt
 export OPENAI_API_KEY=...
+# or a local model through Ollama's OpenAI-compatible endpoint, no key needed:
+#   OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 LLM_MODEL=llama3.1:8b
 python -m pricequery.cli --show-sql "Which category has the highest average price right now?"
 ```
 
 For MySQL: create the tables with `db/schema.sql`, create the read-only user with `db/readonly_user.sql`,
-and set `DATABASE_URL=mysql+pymysql://pricequery_ro:<password>@localhost/pricedb`.
+and set `DATABASE_URL=mysql+pymysql://pricequery_ro:<password>@localhost/pricedb`. MySQL 8 and later log in with `caching_sha2_password`, which PyMySQL can only do with the `cryptography` package (it is in `requirements.txt`). Each process keeps at most `DB_POOL_SIZE` (default 5) connections open, and the read-only user is allowed 20, so keep processes x pool size under that.
 `python -m pricequery.ddl` regenerates `db/schema.sql` from the models.
 
 The demo database is **synthetic**: 60 products in 6 categories with 90 days of daily prices, a few
@@ -83,34 +112,35 @@ unanswerable questions pass only if the model replies `NO_QUERY`. Results go to 
 `python -m eval.run_eval --gold-only` needs no model: it confirms all 21 hand-written queries pass the
 guard, run, and return rows.
 
+## Result with a real model
+
+`python -m eval.run_eval` was run once against **llama3.1:8b**, served locally by Ollama through its OpenAI-compatible endpoint (temperature 0, one run). It is not GPT-4o-mini or any hosted model, and none of those were run. The raw output is [`eval/results_llama3.1-8b.csv`](eval/results_llama3.1-8b.csv).
+
+- **Answerable questions: 15 of 21 match the hand-written SQL** under the strict comparison above. With 21 questions, the 95% interval for that rate is roughly 50% to 86%. No question needed the retry.
+- **Unanswerable questions: 1 of 3 correctly declined** (`NO_QUERY`); the other two got a query that ran.
+- The six misses: in three (q04, q05, q14) the values were right but the query returned an extra column, which the strict comparison counts as a miss. The other three were wrong: q09 left out `DISTINCT` and returned duplicate titles; q18 averaged over every price in history instead of the current price; q21 compared a datetime column to a bare date and counted 0.
+
 ## What was verified
 
-83 tests (`pytest`, about a second), run against a real database and the real guard and executor:
+**134 tests**: 112 run anywhere in a few seconds on SQLite, and 22 more (`tests/test_mysql.py`) run only when `PRICEQUERY_MYSQL_ADMIN_URL` points at a MySQL server they may create a scratch database and user on.
 
-- **Guard**: 22 unsafe statements rejected (chained statements, DML/DDL, `INTO OUTFILE`, `SLEEP`, locking
-  reads, hidden `/*!` comments, `PRAGMA`/`ATTACH`, quoted blocked columns, ...) and 7 tricky-but-valid ones
-  accepted; row-limit rewriting for `LIMIT n`, `LIMIT n OFFSET m`, `LIMIT m, n` and subqueries.
-- **Executor**: writes refused by the database itself, with the row count unchanged afterwards; row cap and
-  truncation flag; a runaway recursive query stopped by the timeout; `:` and `%` inside literals.
-- **Engine**, with a scripted stand-in for the model: SQL extracted from fences; the prompt contains the
-  schema, examples, date and dialect and not the blocked column; one retry on a SQL error with the failed
-  SQL and the database message in the retry prompt; a second failure is raised, not retried again;
-  unsafe SQL refused with a single model call and the table intact; `NO_QUERY` handled.
-- **Eval harness**: the comparator, plus a model that returns the hand-written SQL scores 21/21 and a
-  plausible-but-wrong query ("ever out of stock" instead of "out of stock now") is marked wrong.
-- All 21 hand-written queries run and return rows on the demo database.
+- **Guard**: 22 unsafe statements rejected (chained statements, DML/DDL, `INTO OUTFILE`, `SLEEP`, locking reads, hidden `/*!` comments, `PRAGMA`/`ATTACH`, quoted blocked columns, ...) and 7 tricky-but-valid ones accepted; row-limit rewriting for `LIMIT n`, `LIMIT n OFFSET m`, `LIMIT m, n` and subqueries.
+- **Executor**: writes refused by the database itself, with the row count unchanged afterwards; row cap and truncation flag; a runaway recursive query stopped by the timeout; `:` and `%` inside literals; the pool bounded on server databases.
+- **Engine**, with a scripted stand-in for the model: SQL extracted from fences; the prompt contains the schema, examples, date and dialect and not the blocked column; one retry on a SQL error with the failed SQL and the database message in the retry prompt; a second failure is raised, not retried again; unsafe SQL refused with a single model call and the table intact; `NO_QUERY` handled.
+- **REST API** (28 tests): each outcome in the table above, malformed requests never reaching the model, destructive statements refused with the data untouched, a model outage not leaking its error text, row-cap truncation, JSON types.
+- **Eval harness**: the comparator, plus a model that returns the hand-written SQL scores 21/21 and a plausible-but-wrong query is marked wrong. All 21 hand-written queries run and return rows on SQLite and on MySQL.
+- **MySQL**, against a real server (MySQL 9.7.2, a scratch instance): the shipped `db/schema.sql` and `db/readonly_user.sql` applied as written; the seeded data loaded into that schema; writes refused twice over (by the user's grants, and, for an account that does have write rights, by the `READ ONLY` session); the column-level grant hiding `price_alerts.email` (`SELECT email` and `SELECT *` both denied); a runaway query stopped by `MAX_EXECUTION_TIME` and not retried; a MySQL error message reaching the retry prompt; the REST API returning MySQL rows as JSON.
+
+Running on a real server found two bugs that SQLite could not show, both fixed:
+
+1. **PriceQuery could not start with the read-only user this repo ships.** SQLAlchemy describes MySQL tables with `SHOW CREATE TABLE`, which MySQL refuses to a user who only has column-level grants (the grant that hides `email`). The schema is now read from `information_schema` on MySQL, which lists exactly the columns the user may see.
+2. **The connection pool could exceed the user's connection limit.** SQLAlchemy's default pool opens up to 15 connections; the read-only user was limited to 5, so concurrent requests would fail with `max_user_connections`. Pools are now capped (`DB_POOL_SIZE`) and the user's limit raised to 20.
 
 ## What was not verified
 
-- **No accuracy figure for the model.** The tests use a scripted stand-in for the model, which checks the
-  pipeline around it, not how often a real model writes the right SQL. No API key was available, so
-  `python -m eval.run_eval` has not been run against a real model and this repo reports no model-accuracy
-  number. Run it with your key to get one.
-- **MySQL was never run.** No MySQL server was available. Everything above ran on SQLite.
-  `db/schema.sql` was generated from the models but not applied to a server, `db/readonly_user.sql` has not
-  been executed, and the MySQL session settings (`READ ONLY`, `MAX_EXECUTION_TIME`) and the driver's
-  handling of `%` in generated SQL are untested. Expect to adjust.
-- The timeout is verified on SQLite only. A valid but expensive `SELECT` is bounded by the timeout and the
-  row cap, not prevented.
-- Only prices in the demo schema are described to the model (GBP); another schema needs its own column notes
-  in `pricequery/schema.py`.
+- **Hosted models.** Accuracy was measured for one local 8B model, once, on 21 questions. Nothing was run against GPT-4o-mini or any other hosted model, so the repo has no figure for them.
+- **MySQL 8.4 and managed MySQL.** The server used was MySQL 9.7.2 (a conda-forge build run locally). RDS, Aurora and the 8.4 LTS release were not tried.
+- The timeout is verified on SQLite and MySQL with a runaway query. A valid but expensive `SELECT` is bounded by the timeout and the row cap, not prevented.
+- Only prices in the demo schema are described to the model (GBP); another schema needs its own column notes in `pricequery/schema.py`.
+- The API has no authentication, rate limiting or CORS, and was not load-tested.
+- Nothing here measures any effect on a real reporting workload: the demo database is synthetic.
