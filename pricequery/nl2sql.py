@@ -80,6 +80,11 @@ class PriceQuery:
         self._fix = _FIX | llm | self._parser
         self._schema = describe_schema(executor.engine, self.blocked)
 
+    @property
+    def schema(self) -> str:
+        """The schema text the model is shown (blocked columns already left out)."""
+        return self._schema
+
     def _context(self) -> dict:
         return {
             "dialect": self.executor.dialect,
